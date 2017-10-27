@@ -19,7 +19,10 @@ defmodule Kernel.SpecialForms do
   defmacrop error!(args) do
     quote do
       _ = unquote(args)
-      message = "Elixir's special forms are expanded by the compiler and must not be invoked directly"
+
+      message =
+        "Elixir's special forms are expanded by the compiler and must not be invoked directly"
+
       :erlang.error(RuntimeError.exception(message))
     end
   end
@@ -572,8 +575,9 @@ defmodule Kernel.SpecialForms do
       import List, only: [flatten: 1]
       import String, except: [split: 2]
 
-  Notice that calling `except` for a previously declared `import/2`
-  simply filters the previously imported elements. For example:
+  Notice that calling `except` is always exclusive on a previously
+  declared `import/2`. If there is no previous import, then it applies
+  to all functions and macros in the module. For example:
 
       import List, only: [flatten: 1, keyfind: 4]
       import List, except: [flatten: 1]
@@ -696,7 +700,7 @@ defmodule Kernel.SpecialForms do
       1
 
   """
-  defmacro ^(var), do: error!([var])
+  defmacro ^var, do: error!([var])
 
   @doc """
   Matches the value on the right against the pattern on the left.
@@ -762,6 +766,8 @@ defmodule Kernel.SpecialForms do
     * `:location` - when set to `:keep`, keeps the current line and file from
       quote. Read the Stacktrace information section below for more
       information.
+
+    * `:line` - sets the quoted expressions to have the given line.
 
     * `:generated` - marks the given chunk as generated so it does not emit warnings.
       Currently it only works on special forms (for example, you can annotate a `case`
@@ -1401,7 +1407,7 @@ defmodule Kernel.SpecialForms do
       {:__block__, [], [1, 2, 3]}
 
   """
-  defmacro __block__(args), do: error!([args])
+  defmacro unquote(:__block__)(args), do: error!([args])
 
   @doc """
   Captures or creates an anonymous function.
@@ -1511,7 +1517,7 @@ defmodule Kernel.SpecialForms do
     3. When the head element of aliases is the atom `:Elixir`, no expansion happens.
 
   """
-  defmacro __aliases__(args), do: error!([args])
+  defmacro unquote(:__aliases__)(args), do: error!([args])
 
   @doc """
   Calls the overridden function when overriding it with `Kernel.defoverridable/1`.

@@ -58,8 +58,8 @@ defmodule ExUnit do
   """
 
   @typedoc "The error state returned by ExUnit.Test and ExUnit.TestModule"
-  @type state  :: nil | {:failed, failed} | {:skip, binary} | {:invalid, module}
-  @type failed :: [{Exception.kind, reason :: term, stacktrace :: [tuple]}]
+  @type state :: nil | {:failed, failed} | {:skip, binary} | {:invalid, module}
+  @type failed :: [{Exception.kind(), reason :: term, stacktrace :: [tuple]}]
 
   defmodule Test do
     @moduledoc """
@@ -79,12 +79,13 @@ defmodule ExUnit do
 
     # TODO: Remove the `:case` field on Elixir v2.0
     @type t :: %__MODULE__{
-                 name: atom,
-                 case: module,
-                 module: module,
-                 state: ExUnit.state,
-                 time: non_neg_integer,
-                 tags: map}
+            name: atom,
+            case: module,
+            module: module,
+            state: ExUnit.state(),
+            time: non_neg_integer,
+            tags: map
+          }
   end
 
   defmodule TestModule do
@@ -100,10 +101,7 @@ defmodule ExUnit do
     """
     defstruct [:name, :state, tests: []]
 
-    @type t :: %__MODULE__{
-                 name: module,
-                 state: ExUnit.state,
-                 tests: [ExUnit.Test.t]}
+    @type t :: %__MODULE__{name: module, state: ExUnit.state(), tests: [ExUnit.Test.t()]}
   end
 
   defmodule TestCase do
@@ -111,10 +109,7 @@ defmodule ExUnit do
     @moduledoc false
     defstruct [:name, :state, tests: []]
 
-    @type t :: %__MODULE__{
-                 name: module,
-                 state: ExUnit.state,
-                 tests: [ExUnit.Test.t]}
+    @type t :: %__MODULE__{name: module, state: ExUnit.state(), tests: [ExUnit.Test.t()]}
   end
 
   defmodule TimeoutError do
@@ -167,17 +162,19 @@ defmodule ExUnit do
     if Application.fetch_env!(:ex_unit, :autorun) do
       Application.put_env(:ex_unit, :autorun, false)
 
-      System.at_exit fn
+      System.at_exit(fn
         0 ->
           time = ExUnit.Server.modules_loaded()
           config = persist_defaults(configuration())
           %{failures: failures} = ExUnit.Runner.run(config, time)
-          System.at_exit fn _ ->
+
+          System.at_exit(fn _ ->
             if failures > 0, do: exit({:shutdown, 1})
-          end
+          end)
+
         _ ->
           :ok
-      end
+      end)
     end
   end
 
@@ -222,7 +219,10 @@ defmodule ExUnit do
     * `:refute_receive_timeout` - the timeout to be used on `refute_receive`
       calls, defaults to `100` milliseconds;
 
-    * `:seed` - an integer seed value to randomize the test suite;
+    * `:seed` - an integer seed value to randomize the test suite. This seed
+      is also mixed with the test module and name to create a new unique seed
+      on every test, which is automatically fed into the `:rand` module. This
+      provides randomness between tests, but predictable and reproducible results;
 
     * `:slowest` - prints timing information for the N slowest tests. Running
       ExUnit with slow test reporting automatically runs in `trace` mode. It
@@ -239,9 +239,9 @@ defmodule ExUnit do
 
   """
   def configure(options) do
-    Enum.each options, fn {k, v} ->
+    Enum.each(options, fn {k, v} ->
       Application.put_env(:ex_unit, k, v)
-    end
+    end)
   end
 
   @doc """
@@ -275,6 +275,7 @@ defmodule ExUnit do
     plural_rules =
       Application.get_env(:ex_unit, :plural_rules, %{})
       |> Map.put(word, pluralization)
+
     configure(plural_rules: plural_rules)
   end
 
@@ -299,7 +300,14 @@ defmodule ExUnit do
 
   defp put_seed(opts) do
     Keyword.put_new_lazy(opts, :seed, fn ->
-      :os.timestamp |> elem(2)
+      # We're using `rem System.system_time()` here
+      # instead of directly using :os.timestamp or using the
+      # :microsecond argument because the VM on Windows has odd
+      # precision. Calling with :microsecond will give us a multiple
+      # of 1000. Calling without it gives actual microsecond precision.
+      System.system_time()
+      |> System.convert_time_unit(:native, :microsecond)
+      |> rem(1_000_000)
     end)
   end
 
@@ -319,7 +327,7 @@ defmodule ExUnit do
     cond do
       opts[:trace] -> 1
       max = opts[:max_cases] -> max
-      true -> System.schedulers_online * 2
+      true -> System.schedulers_online() * 2
     end
   end
 end

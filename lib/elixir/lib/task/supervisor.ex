@@ -15,14 +15,20 @@ defmodule Task.Supervisor do
   """
 
   @typedoc "Option values used by `start_link`"
-  @type option :: Supervisor.option |
-                  {:restart, :supervisor.restart} |
-                  {:shutdown, :supervisor.shutdown}
+  @type option ::
+          Supervisor.option()
+          | {:restart, :supervisor.restart()}
+          | {:shutdown, :supervisor.shutdown()}
+
+  @typedoc "Supervisor spec used by `async_stream`"
+  @type async_stream_supervisor ::
+          Supervisor.supervisor()
+          | (term -> Supervisor.supervisor())
 
   @doc false
   def child_spec(arg) do
     %{
-      id: Task.Supervivsor,
+      id: Task.Supervisor,
       start: {Task.Supervisor, :start_link, [arg]},
       type: :supervisor
     }
@@ -52,16 +58,18 @@ defmodule Task.Supervisor do
     * `:max_restarts` and `:max_seconds` - as specified in `Supervisor`;
 
   """
-  @spec start_link([option]) :: Supervisor.on_start
+  @spec start_link([option]) :: Supervisor.on_start()
   def start_link(opts \\ []) do
-    {restart, opts}  = Keyword.pop(opts, :restart, :temporary)
+    {restart, opts} = Keyword.pop(opts, :restart, :temporary)
     {shutdown, opts} = Keyword.pop(opts, :shutdown, 5000)
+
     child = %{
       id: Task.Supervised,
       start: {Task.Supervised, :start_link, []},
       restart: restart,
       shutdown: shutdown
     }
+
     Supervisor.start_link([child], [strategy: :simple_one_for_one] ++ opts)
   end
 
@@ -76,7 +84,7 @@ defmodule Task.Supervisor do
   as the `:restart` option (the default), as `async/2` keeps a direct
   reference to the task which is lost if the task is restarted.
   """
-  @spec async(Supervisor.supervisor, (() -> any)) :: Task.t
+  @spec async(Supervisor.supervisor(), (() -> any)) :: Task.t()
   def async(supervisor, fun) do
     async(supervisor, :erlang, :apply, [fun, []])
   end
@@ -92,7 +100,7 @@ defmodule Task.Supervisor do
   as the `:restart` option (the default), as `async/4` keeps a direct
   reference to the task which is lost if the task is restarted.
   """
-  @spec async(Supervisor.supervisor, module, atom, [term]) :: Task.t
+  @spec async(Supervisor.supervisor(), module, atom, [term]) :: Task.t()
   def async(supervisor, module, fun, args) do
     do_async(supervisor, :link, module, fun, args)
   end
@@ -123,7 +131,7 @@ defmodule Task.Supervisor do
   with the same `ref` value that is held by the task struct. If the task
   terminates normally, the reason in the `:DOWN` message will be `:normal`.
   """
-  @spec async_nolink(Supervisor.supervisor, (() -> any)) :: Task.t
+  @spec async_nolink(Supervisor.supervisor(), (() -> any)) :: Task.t()
   def async_nolink(supervisor, fun) do
     async_nolink(supervisor, :erlang, :apply, [fun, []])
   end
@@ -139,7 +147,7 @@ defmodule Task.Supervisor do
   as the `:restart` option (the default), as `async_nolink/4` keeps a
   direct reference to the task which is lost if the task is restarted.
   """
-  @spec async_nolink(Supervisor.supervisor, module, atom, [term]) :: Task.t
+  @spec async_nolink(Supervisor.supervisor(), module, atom, [term]) :: Task.t()
   def async_nolink(supervisor, module, fun, args) do
     do_async(supervisor, :nolink, module, fun, args)
   end
@@ -151,6 +159,15 @@ defmodule Task.Supervisor do
   Each item will be prepended to the given `args` and processed by its
   own task. The tasks will be spawned under the given `supervisor` and
   linked to the current process, similarly to `async/4`.
+
+  You may also provide a function as the `supervisor`. Before each task is
+  started, the function will be invoked (in a new process which is linked to
+  the current process) with the stream entry that the to-be-spawned task will
+  process as its argument. The function should return a supervisor pid or name,
+  which will be used to spawn the task. This allows one to dynamically start
+  tasks in different locations in the supervision tree(s) on the local (or
+  another) node. Notably, this enables the distribution of concurrent stream
+  tasks over multiple nodes.
 
   When streamed, each task will emit `{:ok, value}` upon successful
   completion or `{:exit, reason}` if the caller is trapping exits.
@@ -194,8 +211,8 @@ defmodule Task.Supervisor do
       Enum.to_list(stream)
 
   """
-  @spec async_stream(Supervisor.supervisor, Enumerable.t, module, atom, [term], keyword) ::
-        Enumerable.t
+  @spec async_stream(async_stream_supervisor, Enumerable.t(), module, atom, [term], keyword) ::
+          Enumerable.t()
   def async_stream(supervisor, enumerable, module, function, args, options \\ [])
       when is_atom(module) and is_atom(function) and is_list(args) do
     build_stream(supervisor, :link, enumerable, {module, function, args}, options)
@@ -211,8 +228,8 @@ defmodule Task.Supervisor do
 
   See `async_stream/6` for discussion, options, and examples.
   """
-  @spec async_stream(Supervisor.supervisor, Enumerable.t, (term -> term), keyword) ::
-        Enumerable.t
+  @spec async_stream(async_stream_supervisor, Enumerable.t(), (term -> term), keyword) ::
+          Enumerable.t()
   def async_stream(supervisor, enumerable, fun, options \\ []) when is_function(fun, 1) do
     build_stream(supervisor, :link, enumerable, fun, options)
   end
@@ -227,8 +244,14 @@ defmodule Task.Supervisor do
 
   See `async_stream/6` for discussion, options, and examples.
   """
-  @spec async_stream_nolink(Supervisor.supervisor, Enumerable.t, module, atom, [term], keyword) ::
-        Enumerable.t
+  @spec async_stream_nolink(
+          async_stream_supervisor,
+          Enumerable.t(),
+          module,
+          atom,
+          [term],
+          keyword
+        ) :: Enumerable.t()
   def async_stream_nolink(supervisor, enumerable, module, function, args, options \\ [])
       when is_atom(module) and is_atom(function) and is_list(args) do
     build_stream(supervisor, :nolink, enumerable, {module, function, args}, options)
@@ -244,8 +267,8 @@ defmodule Task.Supervisor do
 
   See `async_stream/6` for discussion and examples.
   """
-  @spec async_stream_nolink(Supervisor.supervisor, Enumerable.t, (term -> term), keyword) ::
-        Enumerable.t
+  @spec async_stream_nolink(async_stream_supervisor, Enumerable.t(), (term -> term), keyword) ::
+          Enumerable.t()
   def async_stream_nolink(supervisor, enumerable, fun, options \\ []) when is_function(fun, 1) do
     build_stream(supervisor, :nolink, enumerable, fun, options)
   end
@@ -253,7 +276,7 @@ defmodule Task.Supervisor do
   @doc """
   Terminates the child with the given `pid`.
   """
-  @spec terminate_child(Supervisor.supervisor, pid) :: :ok
+  @spec terminate_child(Supervisor.supervisor(), pid) :: :ok
   def terminate_child(supervisor, pid) when is_pid(pid) do
     Supervisor.terminate_child(supervisor, pid)
   end
@@ -261,7 +284,7 @@ defmodule Task.Supervisor do
   @doc """
   Returns all children PIDs.
   """
-  @spec children(Supervisor.supervisor) :: [pid]
+  @spec children(Supervisor.supervisor()) :: [pid]
   def children(supervisor) do
     for {_, pid, _, _} <- Supervisor.which_children(supervisor), is_pid(pid), do: pid
   end
@@ -274,7 +297,7 @@ defmodule Task.Supervisor do
   task needs to perform side-effects (like I/O) and does not need
   to report back to the caller.
   """
-  @spec start_child(Supervisor.supervisor, (() -> any)) :: {:ok, pid}
+  @spec start_child(Supervisor.supervisor(), (() -> any)) :: {:ok, pid}
   def start_child(supervisor, fun) do
     start_child(supervisor, :erlang, :apply, [fun, []])
   end
@@ -285,17 +308,19 @@ defmodule Task.Supervisor do
   Similar to `start_child/2` except the task is specified
   by the given `module`, `fun` and `args`.
   """
-  @spec start_child(Supervisor.supervisor, module, atom, [term]) :: {:ok, pid}
+  @spec start_child(Supervisor.supervisor(), module, atom, [term]) :: {:ok, pid}
   def start_child(supervisor, module, fun, args) when is_atom(fun) and is_list(args) do
     Supervisor.start_child(supervisor, [get_info(self()), {module, fun, args}])
   end
 
   defp get_info(self) do
-    {node(),
-     case Process.info(self, :registered_name) do
-       {:registered_name, []} -> self
-       {:registered_name, name} -> name
-     end}
+    name =
+      case Process.info(self, :registered_name) do
+        {:registered_name, []} -> self
+        {:registered_name, name} -> name
+      end
+
+    {node(), name}
   end
 
   defp do_async(supervisor, link_type, module, fun, args) do
@@ -304,14 +329,30 @@ defmodule Task.Supervisor do
     {:ok, pid} = Supervisor.start_child(supervisor, args)
     if link_type == :link, do: Process.link(pid)
     ref = Process.monitor(pid)
-    send pid, {owner, ref}
+    send(pid, {owner, ref})
     %Task{pid: pid, ref: ref, owner: owner}
   end
 
+  defp supervisor_fun(supervisor, {_module, _fun, _args})
+       when is_function(supervisor, 1) do
+    fn {_module, _fun, [entry | _rest_args]} -> supervisor.(entry) end
+  end
+
+  defp supervisor_fun(supervisor, fun)
+       when is_function(supervisor, 1) and is_function(fun, 1) do
+    fn {_erlang, _apply, [_fun, [entry]]} -> supervisor.(entry) end
+  end
+
+  defp supervisor_fun(supervisor, _fun) do
+    fn _mfa -> supervisor end
+  end
+
   defp build_stream(supervisor, link_type, enumerable, fun, options) do
+    supervisor_fun = supervisor_fun(supervisor, fun)
+
     &Task.Supervised.stream(enumerable, &1, &2, fun, options, fn owner, mfa ->
       args = [owner, :monitor, get_info(owner), mfa]
-      {:ok, pid} = Supervisor.start_child(supervisor, args)
+      {:ok, pid} = Supervisor.start_child(supervisor_fun.(mfa), args)
       if link_type == :link, do: Process.link(pid)
       {link_type, pid}
     end)

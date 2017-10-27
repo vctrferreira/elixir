@@ -14,8 +14,8 @@ match(Fun, Expr, #{context := Context, match_vars := Match, prematch_vars := nil
   {EExpr, EE#{context := Context, match_vars := Match, prematch_vars := nil}}.
 
 def({Meta, Args, Guards, Body}, E) ->
-  {EArgs, EA}   = elixir_expand:expand(Args, E#{context := match, match_vars := []}),
-  {EGuards, EG} = guard(Guards, EA#{context := guard, match_vars := warn}),
+  {EArgs, EA}   = elixir_expand:expand(Args, E#{context := match, match_vars := [], prematch_vars := []}),
+  {EGuards, EG} = guard(Guards, EA#{context := guard, match_vars := warn, prematch_vars := nil}),
   {EBody, _}    = elixir_expand:expand(Body, EG#{context := nil}),
   {Meta, EArgs, EGuards, EBody}.
 
@@ -40,8 +40,24 @@ guard({'when', Meta, [Left, Right]}, E) ->
   {ELeft, EL}  = guard(Left, E),
   {ERight, ER} = guard(Right, EL),
   {{'when', Meta, [ELeft, ERight]}, ER};
-guard(Other, E) ->
-  elixir_expand:expand(Other, E).
+guard(Guard, E) ->
+  {EGuard, EG} = elixir_expand:expand(Guard, E),
+  warn_zero_length_guard(EGuard, EG),
+  {EGuard, EG}.
+
+warn_zero_length_guard({{'.', _, [erlang, '==']}, Meta,
+                        [{{'.', _, [erlang, length]}, _, [Arg]}, 0]}, E) ->
+  ArgString = 'Elixir.Macro':to_string(Arg),
+  Message = io_lib:format("\"length(~ts) == 0\" is discouraged since it has to "
+                          "traverse the whole list to check if it is empty or not. "
+                          "Prefer to pattern match on an empty list or use "
+                          "\"~ts == []\" as a guard", [ArgString, ArgString]),
+  elixir_errors:warn(?line(Meta), ?key(E, file), Message);
+warn_zero_length_guard({Op, _, [L, R]}, E) when Op == 'or'; Op == 'and' ->
+  warn_zero_length_guard(L, E),
+  warn_zero_length_guard(R, E);
+warn_zero_length_guard(_, _) ->
+  ok.
 
 %% Case
 
@@ -99,7 +115,7 @@ expand_cond(Meta, {Key, _}, _Acc, E) ->
   {EClauses, EVars} = lists:mapfoldl(fun(X, Acc) -> expand_receive(Meta, X, Acc, EE) end, [], Opts),
   {EClauses, elixir_env:mergev(EVars, E)}.
 
-expand_receive(_Meta, {'do', nil} = Do, Acc, _E) ->
+expand_receive(_Meta, {'do', {'__block__', _, []}} = Do, Acc, _E) ->
   {Do, Acc};
 expand_receive(Meta, {'do', _} = Do, Acc, E) ->
   Fun = expand_one(Meta, 'receive', 'do', fun head/2),
@@ -189,6 +205,7 @@ expand_with_else(Meta, Opts, E, HasMatch) ->
   ok = assert_at_most_once('catch', Opts, 0, RaiseError),
   ok = assert_at_most_once('else', Opts, 0, RaiseError),
   ok = assert_at_most_once('after', Opts, 0, RaiseError),
+  ok = warn_catch_before_rescue(Opts, Meta, E, false),
   {lists:map(fun(X) -> expand_try(Meta, X, E) end, Opts), E}.
 
 expand_try(_Meta, {'do', Expr}, E) ->
@@ -281,13 +298,21 @@ expand_with_export(Meta, Kind, _Fun, {Key, _}, _Acc, E) ->
   form_error(Meta, ?key(E, file), ?MODULE, {bad_or_missing_clauses, {Kind, Key}}).
 
 %% Expands all -> pairs in a given key but do not keep the overall vars.
-expand_without_export(Meta, Kind, Fun, {Key, Clauses}, E) when is_list(Clauses) ->
+expand_without_export(Meta, Kind, Fun, Clauses, E) ->
+  NewKind =
+    case lists:keyfind(origin, 1, Meta) of
+      {origin, Origin} -> Origin;
+      _ -> Kind
+    end,
+  expand_without_export_origin(Meta, NewKind, Fun, Clauses, E).
+
+expand_without_export_origin(Meta, Kind, Fun, {Key, Clauses}, E) when is_list(Clauses) ->
   Transformer = fun(Clause) ->
     {EClause, _} = clause(Meta, {Kind, Key}, Fun, Clause, E),
     EClause
   end,
   {Key, lists:map(Transformer, Clauses)};
-expand_without_export(Meta, Kind, _Fun, {Key, _}, E) ->
+expand_without_export_origin(Meta, Kind, _Fun, {Key, _}, E) ->
   form_error(Meta, ?key(E, file), ?MODULE, {bad_or_missing_clauses, {Kind, Key}}).
 
 assert_at_most_once(_Kind, [], _Count, _Fun) -> ok;
@@ -297,6 +322,16 @@ assert_at_most_once(Kind, [{Kind, _} | Rest], Count, Fun) ->
   assert_at_most_once(Kind, Rest, Count + 1, Fun);
 assert_at_most_once(Kind, [_ | Rest], Count, Fun) ->
   assert_at_most_once(Kind, Rest, Count, Fun).
+
+warn_catch_before_rescue([], _, _, _) -> ok;
+warn_catch_before_rescue([{'rescue', _} | _], Meta, E, true) ->
+  Message = "\"catch\" should always come after \"rescue\" in try",
+  elixir_errors:warn(?line(Meta), ?key(E, file), Message),
+  ok;
+warn_catch_before_rescue([{'catch', _} | Rest], Meta, E, _) ->
+  warn_catch_before_rescue(Rest, Meta, E, true);
+warn_catch_before_rescue([_ | Rest], Meta, E, Found) ->
+  warn_catch_before_rescue(Rest, Meta, E, Found).
 
 format_error({bad_or_missing_clauses, {Kind, Key}}) ->
   io_lib:format("expected -> clauses for :~ts in \"~ts\"", [Key, Kind]);

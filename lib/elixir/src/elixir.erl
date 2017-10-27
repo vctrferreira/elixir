@@ -3,7 +3,7 @@
 -module(elixir).
 -behaviour(application).
 -export([start_cli/0,
-  string_to_quoted/4, 'string_to_quoted!'/4,
+  string_to_tokens/4, tokens_to_quoted/3, 'string_to_quoted!'/4,
   env_for_eval/1, env_for_eval/2, quoted_to_erl/2, quoted_to_erl/3,
   eval/2, eval/3, eval_forms/3, eval_forms/4, eval_quoted/3]).
 -include("elixir.hrl").
@@ -35,16 +35,15 @@ start(_Type, _Args) ->
       error   -> [binary]
     end,
 
-  OTPRelease = string:to_integer(erlang:system_info(otp_release)),
-
   %% Whenever we change this check, we should also change escript.build.
-  case OTPRelease of
-    {Num, _} when Num >= 19 ->
-      ok;
-    _ ->
-      io:format(standard_error, "unsupported Erlang version, expected Erlang 19+~n", []),
-      erlang:halt(1)
-  end,
+  OTPRelease =
+    case string:to_integer(erlang:system_info(otp_release)) of
+      {Num, _} when Num >= 19 ->
+        Num;
+      _ ->
+        io:format(standard_error, "unsupported Erlang version, expected Erlang 19+~n", []),
+        erlang:halt(1)
+    end,
 
   %% We need to make sure the re module is preloaded
   %% to make function_exported checks on it fast.
@@ -83,7 +82,7 @@ start(_Type, _Args) ->
   %% TODO: Remove OTPRelease check once we support OTP 20+.
   Tokenizer = case code:ensure_loaded('Elixir.String.Tokenizer') of
     {module, Mod} when OTPRelease >= 20 -> Mod;
-    {error, _} -> elixir_tokenizer
+    _ -> elixir_tokenizer
   end,
 
   URIConfig = [{{uri, <<"ftp">>}, 21},
@@ -212,7 +211,7 @@ eval_quoted(Tree, Binding, #{line := Line} = E) ->
   eval_forms(elixir_quote:linify(Line, Tree), Binding, E).
 
 %% Handle forms evaluation. The main difference to
-%% eval_quoted is that it does not linefy the given
+%% eval_quoted is that it does not linify the given
 %% args.
 
 eval_forms(Tree, Binding, Opts) when is_list(Opts) ->
@@ -269,31 +268,40 @@ quoted_to_erl(Quoted, Env, Scope) ->
 
 %% Converts a given string (charlist) into quote expression
 
-string_to_quoted(String, StartLine, File, Opts) when is_integer(StartLine), is_binary(File) ->
+string_to_tokens(String, StartLine, File, Opts) when is_integer(StartLine), is_binary(File) ->
   case elixir_tokenizer:tokenize(String, StartLine, [{file, File} | Opts]) of
-    {ok, _Line, _Column, Tokens} ->
-      handle_parsing_opts(File, Opts),
-      try elixir_parser:parse(Tokens) of
-        {ok, Forms} -> {ok, Forms};
-        {error, {{Line, _, _}, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}};
-        {error, {Line, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}}
-      catch
-        {error, {{Line, _, _}, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}};
-        {error, {Line, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}}
-      after
-        erase(elixir_parser_file),
-        erase(wrap_literals_in_blocks)
-      end;
+    {ok, _Tokens} = Ok ->
+      Ok;
     {error, {Line, {ErrorPrefix, ErrorSuffix}, Token}, _Rest, _SoFar} ->
       {error, {Line, {to_binary(ErrorPrefix), to_binary(ErrorSuffix)}, to_binary(Token)}};
     {error, {Line, Error, Token}, _Rest, _SoFar} ->
       {error, {Line, to_binary(Error), to_binary(Token)}}
   end.
 
+tokens_to_quoted(Tokens, File, Opts) ->
+  handle_parsing_opts(File, Opts),
+
+  try elixir_parser:parse(Tokens) of
+    {ok, Forms} -> {ok, Forms};
+    {error, {{Line, _, _}, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}};
+    {error, {Line, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}}
+  catch
+    {error, {{Line, _, _}, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}};
+    {error, {Line, _, [Error, Token]}} -> {error, {Line, to_binary(Error), to_binary(Token)}}
+  after
+    erase(elixir_parser_file),
+    erase(elixir_formatter_metadata)
+  end.
+
 'string_to_quoted!'(String, StartLine, File, Opts) ->
-  case string_to_quoted(String, StartLine, File, Opts) of
-    {ok, Forms} ->
-      Forms;
+  case string_to_tokens(String, StartLine, File, Opts) of
+    {ok, Tokens} ->
+      case tokens_to_quoted(Tokens, File, Opts) of
+        {ok, Forms} ->
+          Forms;
+        {error, {Line, Error, Token}} ->
+          elixir_errors:parse_error(Line, File, Error, Token)
+      end;
     {error, {Line, Error, Token}} ->
       elixir_errors:parse_error(Line, File, Error, Token)
   end.
@@ -302,11 +310,10 @@ to_binary(List) when is_list(List) -> elixir_utils:characters_to_binary(List);
 to_binary(Atom) when is_atom(Atom) -> atom_to_binary(Atom, utf8).
 
 handle_parsing_opts(File, Opts) ->
-  WrapLiteralsInBlocks =
-    case lists:keyfind(wrap_literals_in_blocks, 1, Opts) of
-      {wrap_literals_in_blocks, true} -> true;
-      _ -> false
-    end,
-
+  FormatterMetadata =
+    lists:keyfind(formatter_metadata, 1, Opts) == {formatter_metadata, true},
+  Columns =
+    lists:keyfind(columns, 1, Opts) == {columns, true},
   put(elixir_parser_file, File),
-  put(wrap_literals_in_blocks, WrapLiteralsInBlocks).
+  put(elixir_parser_columns, Columns),
+  put(elixir_formatter_metadata, FormatterMetadata).

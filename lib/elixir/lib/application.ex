@@ -22,7 +22,7 @@ defmodule Application do
   Starting an application is done via the "application module callback", which
   is a module that defines the `start/2` function. The `start/2` function should
   then start a supervisor, which is often called as the top-level supervisor, since
-  it sits at the root of a potentially log supervision tree. When the system is
+  it sits at the root of a potentially long supervision tree. When the system is
   shutting down, all applications shut down their top-level supervisor, which
   terminates children in the opposite order they are started.
 
@@ -112,7 +112,8 @@ defmodule Application do
         use Application
 
         def start(_type, _args) do
-          MyApp.Supervisor.start_link()
+          children = []
+          Supervisor.start_link(children, strategy: :one_for_one)
         end
       end
 
@@ -175,9 +176,9 @@ defmodule Application do
   callback.
   """
   @callback start(start_type, start_args :: term) ::
-    {:ok, pid} |
-    {:ok, pid, state} |
-    {:error, reason :: term}
+              {:ok, pid}
+              | {:ok, pid, state}
+              | {:error, reason :: term}
 
   @doc """
   Called when an application is stopped.
@@ -204,8 +205,7 @@ defmodule Application do
   in the order they are listed in.
   """
   @callback start_phase(phase :: term, start_type, phase_args :: term) ::
-    :ok |
-    {:error, reason :: term}
+              :ok | {:error, reason :: term}
 
   @optional_callbacks start_phase: 3
 
@@ -229,15 +229,26 @@ defmodule Application do
   @type state :: term
   @type start_type :: :permanent | :transient | :temporary
 
-  @application_keys [:description, :id, :vsn, :modules, :maxP, :maxT, :registered,
-                     :included_applications, :applications, :mod, :start_phases]
+  @application_keys [
+    :description,
+    :id,
+    :vsn,
+    :modules,
+    :maxP,
+    :maxT,
+    :registered,
+    :included_applications,
+    :applications,
+    :mod,
+    :start_phases
+  ]
 
   @doc """
   Returns the spec for `app`.
 
   The following keys are returned:
 
-    * #{Enum.map_join @application_keys, "\n  * ", &inspect/1}
+    * #{Enum.map_join(@application_keys, "\n  * ", &inspect/1)}
 
   Note the environment is not returned as it can be accessed via
   `fetch_env/2`. Returns `nil` if the application is not loaded.
@@ -246,7 +257,7 @@ defmodule Application do
   def spec(app) do
     case :application.get_all_key(app) do
       {:ok, info} -> :lists.keydelete(:env, 1, info)
-      :undefined  -> nil
+      :undefined -> nil
     end
   end
 
@@ -320,11 +331,27 @@ defmodule Application do
   @spec fetch_env!(app, key) :: value | no_return
   def fetch_env!(app, key) do
     case fetch_env(app, key) do
-      {:ok, value} -> value
+      {:ok, value} ->
+        value
+
       :error ->
-        raise ArgumentError,
-          "application #{inspect app} is not loaded, " <>
-          "or the configuration parameter #{inspect key} is not set"
+        vsn = :application.get_key(app, :vsn)
+        app = inspect(app)
+        key = inspect(key)
+
+        case vsn do
+          {:ok, _} ->
+            raise ArgumentError,
+                  "could not fetch application environment #{key} for application #{app} " <>
+                    "because configuration #{key} was not set"
+
+          :undefined ->
+            raise ArgumentError,
+                  "could not fetch application environment #{key} for application #{app} " <>
+                    "because the application was not loaded/started. If your application " <>
+                    "depends on #{app} at runtime, make sure to load/start it or list it " <>
+                    "under :extra_applications in your mix.exs file"
+        end
     end
   end
 
@@ -345,7 +372,7 @@ defmodule Application do
   in the application resource file on load. This means persistent values will
   stick after the application is loaded and also on application reload.
   """
-  @spec put_env(app, key, value, [timeout: timeout, persistent: boolean]) :: :ok
+  @spec put_env(app, key, value, timeout: timeout, persistent: boolean) :: :ok
   def put_env(app, key, value, opts \\ []) do
     :application.set_env(app, key, value, opts)
   end
@@ -355,7 +382,7 @@ defmodule Application do
 
   See `put_env/4` for a description of the options.
   """
-  @spec delete_env(app, key, [timeout: timeout, persistent: boolean]) :: :ok
+  @spec delete_env(app, key, timeout: timeout, persistent: boolean) :: :ok
   def delete_env(app, key, opts \\ []) do
     :application.unset_env(app, key, opts)
   end
@@ -485,21 +512,22 @@ defmodule Application do
   For more information on code paths, check the `Code` module in
   Elixir and also Erlang's [`:code` module](http://www.erlang.org/doc/man/code.html).
   """
-  @spec app_dir(app) :: String.t
+  @spec app_dir(app) :: String.t()
   def app_dir(app) when is_atom(app) do
     case :code.lib_dir(app) do
       lib when is_list(lib) -> IO.chardata_to_string(lib)
-      {:error, :bad_name} -> raise ArgumentError, "unknown application: #{inspect app}"
+      {:error, :bad_name} -> raise ArgumentError, "unknown application: #{inspect(app)}"
     end
   end
 
   @doc """
   Returns the given path inside `app_dir/1`.
   """
-  @spec app_dir(app, String.t | [String.t]) :: String.t
+  @spec app_dir(app, String.t() | [String.t()]) :: String.t()
   def app_dir(app, path) when is_binary(path) do
     Path.join(app_dir(app), path)
   end
+
   def app_dir(app, path) when is_list(path) do
     Path.join([app_dir(app) | path])
   end
@@ -517,7 +545,7 @@ defmodule Application do
   """
   @spec loaded_applications :: [tuple]
   def loaded_applications do
-    :application.loaded_applications
+    :application.loaded_applications()
   end
 
   @doc """
@@ -525,7 +553,7 @@ defmodule Application do
   `ensure_started/2`, `stop/1`, `load/1` and `unload/1`,
   returns a string.
   """
-  @spec format_error(any) :: String.t
+  @spec format_error(any) :: String.t()
   def format_error(reason) do
     try do
       do_format_error(reason)
@@ -544,8 +572,8 @@ defmodule Application do
 
   # {:error, reason} return value
   defp do_format_error({reason, {mod, :start, args}}) do
-    Exception.format_mfa(mod, :start, args) <> " returned an error: " <>
-      Exception.format_exit(reason)
+    Exception.format_mfa(mod, :start, args) <>
+      " returned an error: " <> Exception.format_exit(reason)
   end
 
   # error or exit(reason) call, use exit reason as reason.
@@ -555,8 +583,7 @@ defmodule Application do
 
   # bad return value
   defp do_format_error({:bad_return, {{mod, :start, args}, return}}) do
-    Exception.format_mfa(mod, :start, args) <>
-      " returned a bad value: " <> inspect(return)
+    Exception.format_mfa(mod, :start, args) <> " returned a bad value: " <> inspect(return)
   end
 
   defp do_format_error({:already_started, app}) when is_atom(app) do
